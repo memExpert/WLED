@@ -32,51 +32,98 @@
 #ifndef BQ2589X_SYS_PIN
   #define BQ2589X_SYS_PIN 1
 #endif
+#ifndef BQ2589X_DEFAULT_BAT_MIN_V
+  #define BQ2589X_DEFAULT_BAT_MIN_V 3300
+#endif
+#ifndef BQ2589X_DEFAULT_BAT_MAX_V
+  #define BQ2589X_DEFAULT_BAT_MAX_V 4200
+#endif
+#ifndef BQ2589X_DEFAULT_REQUEST_INTERVAL
+  #define BQ2589X_DEFAULT_REQUEST_INTERVAL 5000
+#endif
+#ifndef BQ2589X_DEFAULT_BAT_MAX_CC
+  #define BQ2589X_DEFAULT_BAT_MAX_CC 2100
+#endif
+#ifndef BQ2589X_DEFAULT_BAT_MAX_DC
+  #define BQ2589X_DEFAULT_BAT_MAX_DC 2100
+#endif
+
+static void IRAM_ATTR intPinUp() {
+  // do something when interrupt occurs
+  Serial.println("INT pin up");
+}
 
 //class name. Use something descriptive and leave the ": public Usermod" part :)
 class Usermod_v2_bq2589x : public Usermod {
 
   private:
-
     // Private class members. You can declare variables and functions only accessible to your usermod here
     bq2589x mycharger;
     bq2589x_vbus_type vbus_type;
     bq2589x_part_no   part_no;
     uint32_t          bq2589x_revision;
     uint32_t          bat_capacity;
-    uint32_t          default_bat_min_voltage = 0; /* mV */ 
-    uint32_t          default_bat_max_voltage = 0; /* mV */
-    uint32_t          default_bat_max_current = 0; /* mA */
-    uint32_t          bat_min_voltage = 3300;      /* mV */
-    uint32_t          bat_max_voltage = 4200;      /* mV */
-    uint32_t          bat_max_current = 2100;      /* mA */
-    uint32_t          otg_pin         = BQ2589X_OTG_PIN;
-    uint32_t          nce_pin         = BQ2589X_NCE_PIN;
-    uint32_t          int_pin         = BQ2589X_INT_PIN;
-    uint32_t          sys_pin         = BQ2589X_SYS_PIN;
+    uint32_t          bat_min_voltage = BQ2589X_DEFAULT_BAT_MIN_V;      /* mV */
+    uint32_t          bat_max_voltage = BQ2589X_DEFAULT_BAT_MAX_V;      /* mV */
+    uint32_t          bat_max_discharge_current = BQ2589X_DEFAULT_BAT_MAX_DC;      /* mA */
+    uint32_t          bat_max_charge_current = BQ2589X_DEFAULT_BAT_MAX_CC; /* mA */
+    int8_t            otg_pin         = BQ2589X_OTG_PIN;
+    int8_t            nce_pin         = BQ2589X_NCE_PIN;
+    int8_t            int_pin         = BQ2589X_INT_PIN;
+    int8_t            sys_pin         = BQ2589X_SYS_PIN;
     bool              otg_status      = false;
     bool              work_by_int     = true;
-    uint32_t          requestInterval = 5000; //ms
+    uint32_t          requestInterval = BQ2589X_DEFAULT_REQUEST_INTERVAL; //ms
     
-    bool enabled = false;
+    bool enabled  = true;
+    bool initPinsDone = false;
     bool initDone = false;
     unsigned long lastTime = 0;
-
-    // set your config variables to their boot default value (this can also be done in readFromConfig() or a constructor if you prefer)
-    bool testBool = false;
-    unsigned long testULong = 42424242;
-    float testFloat = 42.42;
-    String testString = "Forty-Two";
-
-    // These config variables have defaults set inside readFromConfig()
-    int testInt;
-    long testLong;
-    int8_t testPins[2];
 
     // string that are used multiple time (this will save some flash memory)
     static const char _name[];
     static const char _enabled[];
+    static const char _requestInterval[];
+    static const char _otgPin[];
+    static const char _ncePin[];
+    static const char _intPin[];
+    static const char _sysPin[];
+    static const char _batMinV[];
+    static const char _batMaxV[];
+    static const char _batMaxDC[];
+    static const char _batMaxCC[];
 
+    void initPins() {
+      if (!enabled) return;
+      if (initPinsDone) return;
+      PinManagerPinType pins[4] = {
+        { otg_pin, true },
+        { nce_pin, true },
+        { int_pin, false },
+        { sys_pin, false }
+      };
+        
+      if (!PinManager::allocateMultiplePins(pins, 4, PinOwner::UM_BQ2589X)) {
+          DEBUG_PRINTF("[%s] pin allocation failed!\n", _name);
+          initPinsDone = false;
+          return;
+      }
+      attachInterrupt(digitalPinToInterrupt(int_pin), intPinUp, RISING);
+      initPinsDone = true;
+    }
+    void deinitPins() {
+      if (!initPinsDone) return;
+      detachInterrupt(digitalPinToInterrupt(int_pin));
+      PinManager::deallocatePin(otg_pin, PinOwner::UM_BQ2589X);
+      PinManager::deallocatePin(nce_pin, PinOwner::UM_BQ2589X);
+      PinManager::deallocatePin(int_pin, PinOwner::UM_BQ2589X);
+      PinManager::deallocatePin(sys_pin, PinOwner::UM_BQ2589X);
+      initPinsDone = false;
+    } 
+    void reinitPins() {
+      deinitPins();
+      initPins();
+    }
 
     // any private methods should go here (non-inline method should be defined out of class)
     void publishMqtt(const char* state, bool retain = false); // example for publishing MQTT message
@@ -124,7 +171,7 @@ class Usermod_v2_bq2589x : public Usermod {
     //   if (UM != nullptr) isExampleEnabled = UM->isEnabled();
     //   if (!isExampleEnabled) UM->enable(true);
     //   #endif
-
+    
 
     // methods called by WLED (can be inlined as they are called only once but if you call them explicitly define them out of class)
 
@@ -135,11 +182,12 @@ class Usermod_v2_bq2589x : public Usermod {
      */
     void setup() override {
       // do your set-up here
-      Serial.println("Hello from my usermod!");
-      Serial.begin(115200);
-      Wire.begin();
-      mycharger.begin(&Wire);
-      mycharger.
+      if (enabled) {
+        Serial.begin(115200);
+        Wire.begin();
+        mycharger.begin(&Wire);
+        initPins();  
+      }
       initDone = true;
     }
 
@@ -149,7 +197,6 @@ class Usermod_v2_bq2589x : public Usermod {
      * Use it to initialize network interfaces
      */
     void connected() override {
-      Serial.println("Connected to WiFi!");
     }
 
 
@@ -163,36 +210,49 @@ class Usermod_v2_bq2589x : public Usermod {
      * 2. Try to avoid using the delay() function. NEVER use delays longer than 10 milliseconds.
      *    Instead, use a timer check as shown here.
      */
+    bool configChanged() {
+      if( enabled && (
+        requestInterval != BQ2589X_DEFAULT_REQUEST_INTERVAL ||
+        bat_min_voltage != BQ2589X_DEFAULT_BAT_MIN_V ||
+        bat_max_voltage != BQ2589X_DEFAULT_BAT_MAX_V ||
+        bat_max_discharge_current != BQ2589X_DEFAULT_BAT_MAX_DC ||
+        bat_max_charge_current != BQ2589X_DEFAULT_BAT_MAX_CC 
+      )) {
+        return true;
+      } else {
+        return false;
+      }
+    }
+
     void loop() override {
       // if usermod is disabled or called during strip updating just exit
       // NOTE: on very long strips strip.isUpdating() may always return true so update accordingly
       if (!enabled || strip.isUpdating()) return;
-
       // do your magic here
-      if (millis() - lastTime > 5000) {
-        Serial.println("I'm alive!");
+      if (millis() - lastTime > requestInterval) {
 
-        mycharger.reset_watchdog_timer();
 
-        mycharger.adc_start(false);
-
-        Serial.print(F(" TYPE:")); Serial.print(vbusType());
-        Serial.print(F(" VBUS:")); Serial.print(mycharger.adc_read_vbus_volt());
-        Serial.print(F(" BAT:"));  Serial.print(mycharger.adc_read_battery_volt());
-        Serial.print(F(" SYS:"));  Serial.print(mycharger.adc_read_sys_volt());
-        Serial.print(F(" TS:"));  Serial.print(mycharger.adc_read_temperature());
-
-        Serial.print(F(" Charging:"));
-        switch (mycharger.get_charging_status()) {
-          case 0: Serial.print(F("Not"));  break;
-          case 1: Serial.print(F("Pre"));  break;
-          case 2: Serial.print(F("Fast")); break;
-          case 3: Serial.print(F("Done")); break;
-        }
-
-        Serial.print(F(" ChargerCurrent:"));  Serial.print(mycharger.adc_read_charge_current());
-        Serial.print(F(" IdmpLimit:"));       Serial.print(mycharger.read_idpm_limit());
-        Serial.println();
+        //mycharger.reset_watchdog_timer();
+//
+        //mycharger.adc_start(false);
+//
+        //Serial.print(F(" TYPE:")); Serial.print(vbusType());
+        //Serial.print(F(" VBUS:")); Serial.print(mycharger.adc_read_vbus_volt());
+        //Serial.print(F(" BAT:"));  Serial.print(mycharger.adc_read_battery_volt());
+        //Serial.print(F(" SYS:"));  Serial.print(mycharger.adc_read_sys_volt());
+        //Serial.print(F(" TS:"));  Serial.print(mycharger.adc_read_temperature());
+//
+        //Serial.print(F(" Charging:"));
+        //switch (mycharger.get_charging_status()) {
+        //  case 0: Serial.print(F("Not"));  break;
+        //  case 1: Serial.print(F("Pre"));  break;
+        //  case 2: Serial.print(F("Fast")); break;
+        //  case 3: Serial.print(F("Done")); break;
+        //}
+//
+        //Serial.print(F(" ChargerCurrent:"));  Serial.print(mycharger.adc_read_charge_current());
+        //Serial.print(F(" IdmpLimit:"));       Serial.print(mycharger.read_idpm_limit());
+        //Serial.println();
         lastTime = millis();
         }
     }
@@ -209,18 +269,28 @@ class Usermod_v2_bq2589x : public Usermod {
       JsonObject user = root["u"];
       if (user.isNull()) user = root.createNestedObject("u");
 
-      //this code adds "u":{"ExampleUsermod":[20," lux"]} to the info object
-      //int reading = 20;
-      //JsonArray lightArr = user.createNestedArray(FPSTR(_name))); //name
-      //lightArr.add(reading); //value
-      //lightArr.add(F(" lux")); //unit
+      JsonArray infoBq2589xVoltage = user.createNestedArray(F("Battery voltage"));
+      infoBq2589xVoltage.add(mycharger.adc_read_battery_volt());
+      infoBq2589xVoltage.add(F(" mV"));
 
-      // if you are implementing a sensor usermod, you may publish sensor data
-      //JsonObject sensor = root[F("sensor")];
-      //if (sensor.isNull()) sensor = root.createNestedObject(F("sensor"));
-      //temp = sensor.createNestedArray(F("light"));
-      //temp.add(reading);
-      //temp.add(F("lux"));
+      JsonArray infoBq2589xCurrent = user.createNestedArray(F("Charge current"));
+      infoBq2589xCurrent.add(mycharger.adc_read_charge_current());
+      infoBq2589xCurrent.add(F(" mA"));
+
+      JsonArray infoBq2589xTemp = user.createNestedArray(F("Temperature"));
+      infoBq2589xTemp.add(mycharger.adc_read_temperature());
+      infoBq2589xTemp.add(F(" °C"));
+
+      JsonArray infoBq2589xType = user.createNestedArray(F("Power source"));
+      infoBq2589xType.add(vbusType());
+
+      JsonArray infoBq2589xStatus = user.createNestedArray(F("Charging status"));
+      switch(mycharger.get_charging_status()) {
+        case 0: infoBq2589xStatus.add("Not");       break;
+        case 1: infoBq2589xStatus.add("Precharge"); break;
+        case 2: infoBq2589xStatus.add("Fast");      break;
+        case 3: infoBq2589xStatus.add("Done");      break;
+      }
     }
 
 
@@ -296,16 +366,15 @@ class Usermod_v2_bq2589x : public Usermod {
     {
       JsonObject top = root.createNestedObject(FPSTR(_name)); // usermodname
       top[FPSTR(_enabled)] = enabled;
-      top["OtgPin"] = otg_pin;  // usermodparam
-      top["NcePin"] = nce_pin;  // usermodparam
-      top["IntPin"] = int_pin;  // usermodparam
-      top["SysPin"] = sys_pin;  // usermodparam
-      top["BatMinV"] = bat_min_voltage;  // usermodparam
-      top["BatMaxV"] = bat_max_voltage;  // usermodparam
-      top["BatMaxC"] = bat_max_current;  // usermodparam
-
-      top[FPSTR(requestInterval)] = readingInterval;
-
+      top[FPSTR(_otgPin)] = otg_pin;  // usermodparam
+      top[FPSTR(_ncePin)] = nce_pin;  // usermodparam
+      top[FPSTR(_intPin)] = int_pin;  // usermodparam
+      top[FPSTR(_sysPin)] = sys_pin;  // usermodparam
+      top[FPSTR(_batMinV)] = bat_min_voltage;  // usermodparam
+      top[FPSTR(_batMaxV)] = bat_max_voltage;  // usermodparam
+      top[FPSTR(_batMaxCC)] = bat_max_charge_current;  // usermodparam
+      top[FPSTR(_batMaxDC)] = bat_max_discharge_current;  // usermodparams
+      top[FPSTR(_requestInterval)] = requestInterval;
     }
 
 
@@ -328,26 +397,52 @@ class Usermod_v2_bq2589x : public Usermod {
     {
       // default settings values could be set here (or below using the 3-argument getJsonValue()) instead of in the class definition or constructor
       // setting them inside readFromConfig() is slightly more robust, handling the rare but plausible use case of single value being missing after boot (e.g. if the cfg.json was manually edited and a value was removed)
+        JsonObject top = root[FPSTR(_name)];
+        if (top.isNull()) {
+          DEBUG_PRINTF("[%s] No config found. (Using defaults.)\n", _name);
+          return false;
+        }
+        uint8_t oldPinInt = int_pin;
+        uint8_t oldPinNce = nce_pin;
+        uint8_t oldPinOtg = otg_pin;
+        uint8_t oldPinSys = sys_pin;
+        bool    oldWorkByInt = work_by_int;
+        bool    oldEnabled = enabled;
+        
+        getJsonValue(top[FPSTR(_otgPin)], otg_pin);
+        getJsonValue(top[FPSTR(_ncePin)], nce_pin);
+        getJsonValue(top[FPSTR(_intPin)], int_pin);
+        getJsonValue(top[FPSTR(_sysPin)], sys_pin);
+        getJsonValue(top[FPSTR(_batMinV)], bat_min_voltage);
+        getJsonValue(top[FPSTR(_batMaxV)], bat_max_voltage);
+        getJsonValue(top[FPSTR(_batMaxCC)], bat_max_charge_current);
+        getJsonValue(top[FPSTR(_batMaxDC)], bat_max_discharge_current);
+        getJsonValue(top[FPSTR(_requestInterval)], requestInterval);
+        getJsonValue(top[FPSTR(_enabled)], enabled);
 
-      JsonObject top = root[FPSTR(_name)];
+        if (enabled != oldEnabled) {
+          deinitPins();
+          DEBUG_PRINTF("bq2589 %s\n", enabled ? "enabled" : "disabled");
+        }
 
-      bool configComplete = !top.isNull();
+        if (enabled && (
+          oldPinInt != int_pin ||
+          oldPinNce != nce_pin ||
+          oldPinOtg != otg_pin ||
+          oldPinSys != sys_pin)
+        ) {
+          DEBUG_PRINTF("bq2589x reinit pins\n");
+          reinitPins();
+        }
 
-      configComplete &= getJsonValue(top["great"], userVar0);
-      configComplete &= getJsonValue(top["testBool"], testBool);
-      configComplete &= getJsonValue(top["testULong"], testULong);
-      configComplete &= getJsonValue(top["testFloat"], testFloat);
-      configComplete &= getJsonValue(top["testString"], testString);
-
-      // A 3-argument getJsonValue() assigns the 3rd argument as a default value if the Json value is missing
-      configComplete &= getJsonValue(top["testInt"], testInt, 42);  
-      configComplete &= getJsonValue(top["testLong"], testLong, -42424242);
-
-      // "pin" fields have special handling in settings page (or some_pin as well)
-      configComplete &= getJsonValue(top["pin"][0], testPins[0], -1);
-      configComplete &= getJsonValue(top["pin"][1], testPins[1], -1);
-
-      return configComplete;
+        if (configChanged()) {
+           DEBUG_PRINTLN("bq2589x config changed");
+           if (enabled) {
+             mycharger.
+           }
+        }
+      
+      return true;
     }
 
 
@@ -360,9 +455,6 @@ class Usermod_v2_bq2589x : public Usermod {
     {
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":great")); oappend(F("',1,'<i>(this is a great config value)</i>');"));
       oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":testString")); oappend(F("',1,'enter any string you want');"));
-      oappend(F("dd=addDropdown('")); oappend(String(FPSTR(_name)).c_str()); oappend(F("','testInt');"));
-      oappend(F("addOption(dd,'Nothing',0);"));
-      oappend(F("addOption(dd,'Everything',42);"));
     }
 
 
@@ -456,10 +548,6 @@ class Usermod_v2_bq2589x : public Usermod {
 };
 
 
-// add more strings here to reduce flash memory usage
-const char Usermod_v2_bq2589x::_name[]    PROGMEM = "ExampleUsermod";
-const char Usermod_v2_bq2589x::_enabled[] PROGMEM = "enabled";
-
 
 // implementation of non-inline member methods
 
@@ -475,6 +563,20 @@ void Usermod_v2_bq2589x::publishMqtt(const char* state, bool retain)
   }
 #endif
 }
+
+// add more strings here to reduce flash memory usage
+const char Usermod_v2_bq2589x::_name[]    PROGMEM = "bq2589x";
+const char Usermod_v2_bq2589x::_enabled[] PROGMEM = "enabled";
+const char Usermod_v2_bq2589x::_requestInterval[] PROGMEM = "request-interval-ms";
+const char Usermod_v2_bq2589x::_otgPin[] PROGMEM = "otg-pin";
+const char Usermod_v2_bq2589x::_ncePin[] PROGMEM = "!ce-pin";
+const char Usermod_v2_bq2589x::_intPin[] PROGMEM = "int-pin";
+const char Usermod_v2_bq2589x::_sysPin[] PROGMEM = "sys-pin";
+const char Usermod_v2_bq2589x::_batMinV[] PROGMEM = "Battery Min Voltage";
+const char Usermod_v2_bq2589x::_batMaxV[] PROGMEM = "Battery Max Voltage";
+const char Usermod_v2_bq2589x::_batMaxDC[] PROGMEM = "Battery Max Discharge Current";
+const char Usermod_v2_bq2589x::_batMaxCC[] PROGMEM = "Battery Max Charge Current";
+
 
 static Usermod_v2_bq2589x bq2589x_um;
 REGISTER_USERMOD(bq2589x_um);
