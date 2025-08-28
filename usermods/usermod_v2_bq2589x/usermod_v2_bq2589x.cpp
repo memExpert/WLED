@@ -49,8 +49,7 @@
 #endif
 
 static void IRAM_ATTR intPinUp() {
-  // do something when interrupt occurs
-  Serial.println("INT pin up");
+  DEBUG_PRINTLN(F("bq2589x INT pin up."));
 }
 
 //class name. Use something descriptive and leave the ": public Usermod" part :)
@@ -61,7 +60,7 @@ class Usermod_v2_bq2589x : public Usermod {
     bq2589x mycharger;
     bq2589x_vbus_type vbus_type;
     bq2589x_part_no   part_no;
-    uint32_t          bq2589x_revision;
+    int          bq2589x_revision;
     uint32_t          bat_capacity;
     uint32_t          bat_min_voltage = BQ2589X_DEFAULT_BAT_MIN_V;      /* mV */
     uint32_t          bat_max_voltage = BQ2589X_DEFAULT_BAT_MAX_V;      /* mV */
@@ -71,10 +70,9 @@ class Usermod_v2_bq2589x : public Usermod {
     int8_t            nce_pin         = BQ2589X_NCE_PIN;
     int8_t            int_pin         = BQ2589X_INT_PIN;
     int8_t            sys_pin         = BQ2589X_SYS_PIN;
-    bool              otg_status      = false;
+    bool              otg_status      = true;
     bool              work_by_int     = true;
     uint32_t          requestInterval = BQ2589X_DEFAULT_REQUEST_INTERVAL; //ms
-    
     bool enabled  = true;
     bool initPinsDone = false;
     bool initDone = false;
@@ -82,6 +80,8 @@ class Usermod_v2_bq2589x : public Usermod {
 
     // string that are used multiple time (this will save some flash memory)
     static const char _name[];
+    static const char _part_no[];
+    static const char _revision[];
     static const char _enabled[];
     static const char _requestInterval[];
     static const char _otgPin[];
@@ -109,8 +109,10 @@ class Usermod_v2_bq2589x : public Usermod {
           return;
       }
       attachInterrupt(digitalPinToInterrupt(int_pin), intPinUp, RISING);
+      digitalWrite(otg_pin, HIGH);
       initPinsDone = true;
     }
+
     void deinitPins() {
       if (!initPinsDone) return;
       detachInterrupt(digitalPinToInterrupt(int_pin));
@@ -186,6 +188,7 @@ class Usermod_v2_bq2589x : public Usermod {
         Serial.begin(115200);
         Wire.begin();
         mycharger.begin(&Wire);
+        mycharger.detect_device(&part_no, &bq2589x_revision);
         initPins();  
       }
       initDone = true;
@@ -225,34 +228,13 @@ class Usermod_v2_bq2589x : public Usermod {
     }
 
     void loop() override {
+      static unsigned long turnOffTime = 0;
       // if usermod is disabled or called during strip updating just exit
       // NOTE: on very long strips strip.isUpdating() may always return true so update accordingly
       if (!enabled || strip.isUpdating()) return;
       // do your magic here
       if (millis() - lastTime > requestInterval) {
 
-
-        //mycharger.reset_watchdog_timer();
-//
-        //mycharger.adc_start(false);
-//
-        //Serial.print(F(" TYPE:")); Serial.print(vbusType());
-        //Serial.print(F(" VBUS:")); Serial.print(mycharger.adc_read_vbus_volt());
-        //Serial.print(F(" BAT:"));  Serial.print(mycharger.adc_read_battery_volt());
-        //Serial.print(F(" SYS:"));  Serial.print(mycharger.adc_read_sys_volt());
-        //Serial.print(F(" TS:"));  Serial.print(mycharger.adc_read_temperature());
-//
-        //Serial.print(F(" Charging:"));
-        //switch (mycharger.get_charging_status()) {
-        //  case 0: Serial.print(F("Not"));  break;
-        //  case 1: Serial.print(F("Pre"));  break;
-        //  case 2: Serial.print(F("Fast")); break;
-        //  case 3: Serial.print(F("Done")); break;
-        //}
-//
-        //Serial.print(F(" ChargerCurrent:"));  Serial.print(mycharger.adc_read_charge_current());
-        //Serial.print(F(" IdmpLimit:"));       Serial.print(mycharger.read_idpm_limit());
-        //Serial.println();
         lastTime = millis();
         }
     }
@@ -268,6 +250,16 @@ class Usermod_v2_bq2589x : public Usermod {
       // if "u" object does not exist yet wee need to create it
       JsonObject user = root["u"];
       if (user.isNull()) user = root.createNestedObject("u");
+      mycharger.adc_start(false);
+      JsonArray infoBq2589xPart = user.createNestedArray(F(_part_no));
+      switch(part_no) {
+        case BQ25890: infoBq2589xPart.add("BQ25890"); break;
+        case BQ25892: infoBq2589xPart.add("BQ25892"); break;
+        case BQ25895: infoBq2589xPart.add("BQ25895"); break;
+        default: infoBq2589xPart.add("Unknown");   break;
+      }
+      JsonArray infoBq2589xRev = user.createNestedArray(F(_revision));
+      infoBq2589xRev.add(bq2589x_revision);
 
       JsonArray infoBq2589xVoltage = user.createNestedArray(F("Battery voltage"));
       infoBq2589xVoltage.add(mycharger.adc_read_battery_volt());
@@ -291,6 +283,15 @@ class Usermod_v2_bq2589x : public Usermod {
         case 2: infoBq2589xStatus.add("Fast");      break;
         case 3: infoBq2589xStatus.add("Done");      break;
       }
+
+      JsonArray infoBq2589xOtgStatus = user.createNestedArray(F("OTG status"));
+      if(otg_status) {
+        infoBq2589xOtgStatus.add("On");
+      } else {
+        infoBq2589xOtgStatus.add("Off");
+      }
+
+      mycharger.adc_stop();
     }
 
 
@@ -315,12 +316,15 @@ class Usermod_v2_bq2589x : public Usermod {
      */
     void readFromJsonState(JsonObject& root) override
     {
-      if (!initDone) return;  // prevent crash on boot applyPreset()
+      if (!initDone || !enabled) return;  // prevent crash on boot applyPreset()
 
       JsonObject usermod = root[FPSTR(_name)];
-      if (!usermod.isNull()) {
-        // expect JSON usermod data in usermod name object: {"ExampleUsermod:{"user0":10}"}
-        userVar0 = usermod["user0"] | userVar0; //if "user0" key exists in JSON, update, else keep old value
+      
+      if(root["on"].is<bool>()) {
+        otg_status = root["on"].as<bool>();
+      } else if (root["on"].is<const char*>()) {
+        if(root["on"].as<const char*>()[0] == 't') otg_status = true;
+        else otg_status = false;
       }
       // you can as well check WLED state JSON keys
       //if (root["bri"] == 255) Serial.println(F("Don't burn down your garage!"));
@@ -438,7 +442,7 @@ class Usermod_v2_bq2589x : public Usermod {
         if (configChanged()) {
            DEBUG_PRINTLN("bq2589x config changed");
            if (enabled) {
-             mycharger.
+          
            }
         }
       
@@ -566,6 +570,8 @@ void Usermod_v2_bq2589x::publishMqtt(const char* state, bool retain)
 
 // add more strings here to reduce flash memory usage
 const char Usermod_v2_bq2589x::_name[]    PROGMEM = "bq2589x";
+const char Usermod_v2_bq2589x::_part_no[] PROGMEM = "part";
+const char Usermod_v2_bq2589x::_revision[] PROGMEM = "rev";
 const char Usermod_v2_bq2589x::_enabled[] PROGMEM = "enabled";
 const char Usermod_v2_bq2589x::_requestInterval[] PROGMEM = "request-interval-ms";
 const char Usermod_v2_bq2589x::_otgPin[] PROGMEM = "otg-pin";
