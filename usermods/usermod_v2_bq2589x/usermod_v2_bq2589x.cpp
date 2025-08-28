@@ -19,12 +19,45 @@
  * 2. Register the usermod by adding #include "usermod_filename.h" in the top and registerUsermod(new MyUsermodClass()) in the bottom of usermods_list.cpp
  */
 
+//Pin defaults for QuinLed Dig-Uno if not overriden
+#ifndef BQ2589X_OTG_PIN
+  #define BQ2589X_OTG_PIN 10
+#endif
+#ifndef BQ2589X_NCE_PIN
+  #define BQ2589X_NCE_PIN 4
+#endif
+#ifndef BQ2589X_INT_PIN
+  #define BQ2589X_INT_PIN 2
+#endif
+#ifndef BQ2589X_SYS_PIN
+  #define BQ2589X_SYS_PIN 1
+#endif
+
 //class name. Use something descriptive and leave the ": public Usermod" part :)
 class Usermod_v2_bq2589x : public Usermod {
 
   private:
 
     // Private class members. You can declare variables and functions only accessible to your usermod here
+    bq2589x mycharger;
+    bq2589x_vbus_type vbus_type;
+    bq2589x_part_no   part_no;
+    uint32_t          bq2589x_revision;
+    uint32_t          bat_capacity;
+    uint32_t          default_bat_min_voltage = 0; /* mV */ 
+    uint32_t          default_bat_max_voltage = 0; /* mV */
+    uint32_t          default_bat_max_current = 0; /* mA */
+    uint32_t          bat_min_voltage = 3300;      /* mV */
+    uint32_t          bat_max_voltage = 4200;      /* mV */
+    uint32_t          bat_max_current = 2100;      /* mA */
+    uint32_t          otg_pin         = BQ2589X_OTG_PIN;
+    uint32_t          nce_pin         = BQ2589X_NCE_PIN;
+    uint32_t          int_pin         = BQ2589X_INT_PIN;
+    uint32_t          sys_pin         = BQ2589X_SYS_PIN;
+    bool              otg_status      = false;
+    bool              work_by_int     = true;
+    uint32_t          requestInterval = 5000; //ms
+    
     bool enabled = false;
     bool initDone = false;
     unsigned long lastTime = 0;
@@ -47,7 +80,21 @@ class Usermod_v2_bq2589x : public Usermod {
 
     // any private methods should go here (non-inline method should be defined out of class)
     void publishMqtt(const char* state, bool retain = false); // example for publishing MQTT message
-
+    
+    String vbusType() {
+      String s = "?";
+        switch (mycharger.get_vbus_type()) {
+          case 0: s = "NONE";       break;
+          case 1: s = "USB_SDP";    break;
+          case 2: s = "CDP(1,5A)";  break;
+          case 3: s = "DCP(3,25A)"; break;
+          case 4: s = "MAXC";       break;
+          case 5: s = "UNKNOWN";    break;
+          case 6: s = "NONSTAND";   break;
+          case 7: s = "OTG";        break;
+        }
+      return s;
+    }
 
   public:
 
@@ -88,7 +135,11 @@ class Usermod_v2_bq2589x : public Usermod {
      */
     void setup() override {
       // do your set-up here
-      //Serial.println("Hello from my usermod!");
+      Serial.println("Hello from my usermod!");
+      Serial.begin(115200);
+      Wire.begin();
+      mycharger.begin(&Wire);
+      mycharger.
       initDone = true;
     }
 
@@ -98,7 +149,7 @@ class Usermod_v2_bq2589x : public Usermod {
      * Use it to initialize network interfaces
      */
     void connected() override {
-      //Serial.println("Connected to WiFi!");
+      Serial.println("Connected to WiFi!");
     }
 
 
@@ -118,10 +169,32 @@ class Usermod_v2_bq2589x : public Usermod {
       if (!enabled || strip.isUpdating()) return;
 
       // do your magic here
-      if (millis() - lastTime > 1000) {
-        //Serial.println("I'm alive!");
+      if (millis() - lastTime > 5000) {
+        Serial.println("I'm alive!");
+
+        mycharger.reset_watchdog_timer();
+
+        mycharger.adc_start(false);
+
+        Serial.print(F(" TYPE:")); Serial.print(vbusType());
+        Serial.print(F(" VBUS:")); Serial.print(mycharger.adc_read_vbus_volt());
+        Serial.print(F(" BAT:"));  Serial.print(mycharger.adc_read_battery_volt());
+        Serial.print(F(" SYS:"));  Serial.print(mycharger.adc_read_sys_volt());
+        Serial.print(F(" TS:"));  Serial.print(mycharger.adc_read_temperature());
+
+        Serial.print(F(" Charging:"));
+        switch (mycharger.get_charging_status()) {
+          case 0: Serial.print(F("Not"));  break;
+          case 1: Serial.print(F("Pre"));  break;
+          case 2: Serial.print(F("Fast")); break;
+          case 3: Serial.print(F("Done")); break;
+        }
+
+        Serial.print(F(" ChargerCurrent:"));  Serial.print(mycharger.adc_read_charge_current());
+        Serial.print(F(" IdmpLimit:"));       Serial.print(mycharger.read_idpm_limit());
+        Serial.println();
         lastTime = millis();
-      }
+        }
     }
 
 
@@ -221,19 +294,18 @@ class Usermod_v2_bq2589x : public Usermod {
      */
     void addToConfig(JsonObject& root) override
     {
-      JsonObject top = root.createNestedObject(FPSTR(_name));
+      JsonObject top = root.createNestedObject(FPSTR(_name)); // usermodname
       top[FPSTR(_enabled)] = enabled;
-      //save these vars persistently whenever settings are saved
-      top["great"] = userVar0;
-      top["testBool"] = testBool;
-      top["testInt"] = testInt;
-      top["testLong"] = testLong;
-      top["testULong"] = testULong;
-      top["testFloat"] = testFloat;
-      top["testString"] = testString;
-      JsonArray pinArray = top.createNestedArray("pin");
-      pinArray.add(testPins[0]);
-      pinArray.add(testPins[1]); 
+      top["OtgPin"] = otg_pin;  // usermodparam
+      top["NcePin"] = nce_pin;  // usermodparam
+      top["IntPin"] = int_pin;  // usermodparam
+      top["SysPin"] = sys_pin;  // usermodparam
+      top["BatMinV"] = bat_min_voltage;  // usermodparam
+      top["BatMaxV"] = bat_max_voltage;  // usermodparam
+      top["BatMaxC"] = bat_max_current;  // usermodparam
+
+      top[FPSTR(requestInterval)] = readingInterval;
+
     }
 
 
@@ -404,5 +476,5 @@ void Usermod_v2_bq2589x::publishMqtt(const char* state, bool retain)
 #endif
 }
 
-static Usermod_v2_bq2589x bq2589x;
-REGISTER_USERMOD(bq2589x);
+static Usermod_v2_bq2589x bq2589x_um;
+REGISTER_USERMOD(bq2589x_um);

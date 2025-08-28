@@ -2,6 +2,6 @@
   "name": "bq2589x",
   "build": { "libArchive": false },
   "dependencies": {
-    "memeexpert/bq2589x":"~1.0.2"
+    "memeexpert/bq2589x":"~1.0.3"
   }
 }
