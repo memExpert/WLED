@@ -1,42 +1,18 @@
 #include "wled.h"
 #include "bq2589x.h"
 
-/*
- * Usermods allow you to add own functionality to WLED more easily
- * See: https://github.com/wled-dev/WLED/wiki/Add-own-functionality
- * 
- * This is an example for a v2 usermod.
- * v2 usermods are class inheritance based and can (but don't have to) implement more functions, each of them is shown in this example.
- * Multiple v2 usermods can be added to one compilation easily.
- * 
- * Creating a usermod:
- * This file serves as an example. If you want to create a usermod, it is recommended to use usermod_v2_empty.h from the usermods folder as a template.
- * Please remember to rename the class and file to a descriptive name.
- * You may also use multiple .h and .cpp files.
- * 
- * Using a usermod:
- * 1. Copy the usermod into the sketch folder (same folder as wled00.ino)
- * 2. Register the usermod by adding #include "usermod_filename.h" in the top and registerUsermod(new MyUsermodClass()) in the bottom of usermods_list.cpp
- */
-
 //Pin defaults for QuinLed Dig-Uno if not overriden
 #ifndef BQ2589X_OTG_PIN
-  #define BQ2589X_OTG_PIN 10
+  #define BQ2589X_OTG_PIN 10 /* if pin up disable internal voltage converter */
 #endif
 #ifndef BQ2589X_NCE_PIN
-  #define BQ2589X_NCE_PIN 4
+  #define BQ2589X_NCE_PIN 4 /* disable charger */
 #endif
 #ifndef BQ2589X_INT_PIN
-  #define BQ2589X_INT_PIN 2
+  #define BQ2589X_INT_PIN 2 /* input pit for interrupt by bq */
 #endif
 #ifndef BQ2589X_SYS_PIN
-  #define BQ2589X_SYS_PIN 1
-#endif
-#ifndef BQ2589X_DEFAULT_BAT_MIN_V
-  #define BQ2589X_DEFAULT_BAT_MIN_V 3300
-#endif
-#ifndef BQ2589X_DEFAULT_BAT_MAX_V
-  #define BQ2589X_DEFAULT_BAT_MAX_V 4200
+  #define BQ2589X_SYS_PIN 1 /* input pin for reading sys voltage by ADC of your controller*/
 #endif
 #ifndef BQ2589X_DEFAULT_REQUEST_INTERVAL
   #define BQ2589X_DEFAULT_REQUEST_INTERVAL 5000
@@ -44,10 +20,13 @@
 #ifndef BQ2589X_DEFAULT_BAT_MAX_CC
   #define BQ2589X_DEFAULT_BAT_MAX_CC 2100
 #endif
-#ifndef BQ2589X_DEFAULT_BAT_MAX_DC
-  #define BQ2589X_DEFAULT_BAT_MAX_DC 2100
+#ifndef BQ2589X_MAX_TEMPERATURE
+  #define BQ2589X_MAX_TEMPERATURE 80
 #endif
 
+
+// this function calls when charger generate event 
+// you can do it all that you want
 static void IRAM_ATTR intPinUp() {
   DEBUG_PRINTLN(F("bq2589x INT pin up."));
 }
@@ -60,23 +39,22 @@ class Usermod_v2_bq2589x : public Usermod {
     bq2589x mycharger;
     bq2589x_vbus_type vbus_type;
     bq2589x_part_no   part_no;
-    int          bq2589x_revision;
-    uint32_t          bat_capacity;
-    uint32_t          bat_min_voltage = BQ2589X_DEFAULT_BAT_MIN_V;      /* mV */
-    uint32_t          bat_max_voltage = BQ2589X_DEFAULT_BAT_MAX_V;      /* mV */
-    uint32_t          bat_max_discharge_current = BQ2589X_DEFAULT_BAT_MAX_DC;      /* mA */
+    int               bq2589x_revision;
+    uint8_t           bat_percentage = 0;               /* % */
     uint32_t          bat_max_charge_current = BQ2589X_DEFAULT_BAT_MAX_CC; /* mA */
+    int               bat_temperature_max = BQ2589X_MAX_TEMPERATURE;    /* °C */
     int8_t            otg_pin         = BQ2589X_OTG_PIN;
     int8_t            nce_pin         = BQ2589X_NCE_PIN;
     int8_t            int_pin         = BQ2589X_INT_PIN;
     int8_t            sys_pin         = BQ2589X_SYS_PIN;
     bool              otg_status      = true;
-    bool              work_by_int     = true;
     uint32_t          requestInterval = BQ2589X_DEFAULT_REQUEST_INTERVAL; //ms
     bool enabled  = true;
     bool initPinsDone = false;
     bool initDone = false;
     unsigned long lastTime = 0;
+
+    uint16_t _conversionTable[101]; // table for converting voltage to percentage
 
     // string that are used multiple time (this will save some flash memory)
     static const char _name[];
@@ -90,8 +68,32 @@ class Usermod_v2_bq2589x : public Usermod {
     static const char _sysPin[];
     static const char _batMinV[];
     static const char _batMaxV[];
-    static const char _batMaxDC[];
     static const char _batMaxCC[];
+    static const char _maxTemperature[];
+
+    void initTable () {
+      _conversionTable[0]  = 3200;
+      _conversionTable[1]  = 3250; _conversionTable[2]  = 3300; _conversionTable[3]  = 3350; _conversionTable[4]  = 3400; _conversionTable[5]  = 3450;
+      _conversionTable[6]  = 3500; _conversionTable[7]  = 3550; _conversionTable[8]  = 3600; _conversionTable[9]  = 3650; _conversionTable[10] = 3700;
+      _conversionTable[11] = 3703; _conversionTable[12] = 3706; _conversionTable[13] = 3710; _conversionTable[14] = 3713; _conversionTable[15] = 3716;
+      _conversionTable[16] = 3719; _conversionTable[17] = 3723; _conversionTable[18] = 3726; _conversionTable[19] = 3729; _conversionTable[20] = 3732;
+      _conversionTable[21] = 3735; _conversionTable[22] = 3739; _conversionTable[23] = 3742; _conversionTable[24] = 3745; _conversionTable[25] = 3748;
+      _conversionTable[26] = 3752; _conversionTable[27] = 3755; _conversionTable[28] = 3758; _conversionTable[29] = 3761; _conversionTable[30] = 3765;
+      _conversionTable[31] = 3768; _conversionTable[32] = 3771; _conversionTable[33] = 3774; _conversionTable[34] = 3777; _conversionTable[35] = 3781;
+      _conversionTable[36] = 3784; _conversionTable[37] = 3787; _conversionTable[38] = 3790; _conversionTable[39] = 3794; _conversionTable[40] = 3797;
+      _conversionTable[41] = 3800; _conversionTable[42] = 3805; _conversionTable[43] = 3811; _conversionTable[44] = 3816; _conversionTable[45] = 3821;
+      _conversionTable[46] = 3826; _conversionTable[47] = 3832; _conversionTable[48] = 3837; _conversionTable[49] = 3842; _conversionTable[50] = 3847;
+      _conversionTable[51] = 3853; _conversionTable[52] = 3858; _conversionTable[53] = 3863; _conversionTable[54] = 3868; _conversionTable[55] = 3874;
+      _conversionTable[56] = 3879; _conversionTable[57] = 3884; _conversionTable[58] = 3889; _conversionTable[59] = 3895; _conversionTable[60] = 3900;
+      _conversionTable[61] = 3906; _conversionTable[62] = 3911; _conversionTable[63] = 3917; _conversionTable[64] = 3922; _conversionTable[65] = 3928;
+      _conversionTable[66] = 3933; _conversionTable[67] = 3939; _conversionTable[68] = 3944; _conversionTable[69] = 3950; _conversionTable[70] = 3956;
+      _conversionTable[71] = 3961; _conversionTable[72] = 3967; _conversionTable[73] = 3972; _conversionTable[74] = 3978; _conversionTable[75] = 3983;
+      _conversionTable[76] = 3989; _conversionTable[77] = 3994; _conversionTable[78] = 4000; _conversionTable[79] = 4008; _conversionTable[80] = 4015;
+      _conversionTable[81] = 4023; _conversionTable[82] = 4031; _conversionTable[83] = 4038; _conversionTable[84] = 4046; _conversionTable[85] = 4054;
+      _conversionTable[86] = 4062; _conversionTable[87] = 4069; _conversionTable[88] = 4077; _conversionTable[89] = 4085; _conversionTable[90] = 4092;
+      _conversionTable[91] = 4100; _conversionTable[92] = 4111; _conversionTable[93] = 4122; _conversionTable[94] = 4133; _conversionTable[95] = 4144;
+      _conversionTable[96] = 4156; _conversionTable[97] = 4167; _conversionTable[98] = 4178; _conversionTable[99] = 4189; _conversionTable[100] = 4200;
+    }
 
     void initPins() {
       if (!enabled) return;
@@ -109,7 +111,8 @@ class Usermod_v2_bq2589x : public Usermod {
           return;
       }
       attachInterrupt(digitalPinToInterrupt(int_pin), intPinUp, RISING);
-      digitalWrite(otg_pin, HIGH);
+      digitalWrite(otg_pin, otg_status ? HIGH : LOW);
+      DEBUG_PRINTF("[%s] pin allocation done\n", _name);
       initPinsDone = true;
     }
 
@@ -120,6 +123,7 @@ class Usermod_v2_bq2589x : public Usermod {
       PinManager::deallocatePin(nce_pin, PinOwner::UM_BQ2589X);
       PinManager::deallocatePin(int_pin, PinOwner::UM_BQ2589X);
       PinManager::deallocatePin(sys_pin, PinOwner::UM_BQ2589X);
+      DEBUG_PRINTF("[%s] pin deallocation done\n", _name);
       initPinsDone = false;
     } 
     void reinitPins() {
@@ -145,6 +149,16 @@ class Usermod_v2_bq2589x : public Usermod {
       return s;
     }
 
+    int calculatePercentage (int voltage) {
+      if (voltage <= _conversionTable[0]) return 0;
+      if (voltage >= _conversionTable[100]) return 100;
+      int i = 1;
+      while (i < 101 && voltage > _conversionTable[i]) {
+        i++;
+      }
+      return i;
+    }
+
   public:
 
     // non WLED related methods, may be used for data exchange between usermods (non-inline methods should be defined out of class)
@@ -161,15 +175,15 @@ class Usermod_v2_bq2589x : public Usermod {
 
     // in such case add the following to another usermod:
     //  in private vars:
-    //   #ifdef USERMOD_EXAMPLE
+    //   #ifdef USERMOD_V2_BQ2589X
     //   Usermod_v2_bq2589x* UM;
     //   #endif
     //  in setup()
-    //   #ifdef USERMOD_EXAMPLE
+    //   #ifdef USERMOD_V2_BQ2589X
     //   UM = (Usermod_v2_bq2589x*) UsermodManager::lookup(USERMOD_ID_BQ2589X);
     //   #endif
     //  somewhere in loop() or other member method
-    //   #ifdef USERMOD_EXAMPLE
+    //   #ifdef USERMOD_V2_BQ2589X
     //   if (UM != nullptr) isExampleEnabled = UM->isEnabled();
     //   if (!isExampleEnabled) UM->enable(true);
     //   #endif
@@ -189,8 +203,10 @@ class Usermod_v2_bq2589x : public Usermod {
         Wire.begin();
         mycharger.begin(&Wire);
         mycharger.detect_device(&part_no, &bq2589x_revision);
+        initTable();
         initPins();  
       }
+      DEBUG_PRINTLN(F("bq2589x usermod setup done"));
       initDone = true;
     }
 
@@ -214,12 +230,11 @@ class Usermod_v2_bq2589x : public Usermod {
      *    Instead, use a timer check as shown here.
      */
     bool configChanged() {
+
       if( enabled && (
         requestInterval != BQ2589X_DEFAULT_REQUEST_INTERVAL ||
-        bat_min_voltage != BQ2589X_DEFAULT_BAT_MIN_V ||
-        bat_max_voltage != BQ2589X_DEFAULT_BAT_MAX_V ||
-        bat_max_discharge_current != BQ2589X_DEFAULT_BAT_MAX_DC ||
-        bat_max_charge_current != BQ2589X_DEFAULT_BAT_MAX_CC 
+        bat_max_charge_current != BQ2589X_DEFAULT_BAT_MAX_CC ||
+        otg_status != true
       )) {
         return true;
       } else {
@@ -227,17 +242,54 @@ class Usermod_v2_bq2589x : public Usermod {
       }
     }
 
+    void sendUserConfigToBq () {
+      if (!enabled || !initDone) return;
+      mycharger.adc_start(false);
+      mycharger.reset_watchdog_timer();
+      
+      if (bat_max_charge_current != BQ2589X_DEFAULT_BAT_MAX_CC) {
+        DEBUG_PRINT(F("bq2589x battery max charge current set to "));
+        DEBUG_PRINT(bat_max_charge_current);
+        DEBUG_PRINTLN(F(" mA"));
+        mycharger.set_charge_current(bat_max_charge_current);
+      }
+      if (bat_temperature_max != BQ2589X_MAX_TEMPERATURE) {
+        DEBUG_PRINT(F("bq2589x battery max temperature set to "));
+        DEBUG_PRINT(bat_temperature_max);
+        DEBUG_PRINTLN(F(" °C"));
+        if (mycharger.adc_read_temperature() > bat_temperature_max) {
+          mycharger.disable_charger();
+          mycharger.disable_otg();
+        }
+      }
+      if (!otg_status) {
+        DEBUG_PRINTLN(F("bq2589x OTG disabled by I2C command"));
+        mycharger.disable_otg();
+      }
+      mycharger.adc_stop();
+
+    }
+
     void loop() override {
-      static unsigned long turnOffTime = 0;
+      static bool timerOn = true;
       // if usermod is disabled or called during strip updating just exit
       // NOTE: on very long strips strip.isUpdating() may always return true so update accordingly
       if (!enabled || strip.isUpdating()) return;
       // do your magic here
       if (millis() - lastTime > requestInterval) {
-
-        lastTime = millis();
+        if (configChanged()) {
+          DEBUG_PRINTLN(F("bq2589x usermod config changed, sending to bq2589x"));
+          timerOn = false;
+          sendUserConfigToBq();
+        } else if (!timerOn) {
+          DEBUG_PRINTLN(F("bq2589x config set to default, enabling watchdog timer"));
+          mycharger.reset_chip();
+          timerOn = true;
         }
     }
+    lastTime = millis();
+  }
+    
 
 
     /*
@@ -261,8 +313,17 @@ class Usermod_v2_bq2589x : public Usermod {
       JsonArray infoBq2589xRev = user.createNestedArray(F(_revision));
       infoBq2589xRev.add(bq2589x_revision);
 
+      JsonArray infoBq2589xLevel = user.createNestedArray(F("Battery level"));
+      int voltage = mycharger.adc_read_battery_volt();
+      infoBq2589xLevel.add(calculatePercentage(voltage));
+      infoBq2589xLevel.add(F(" %"));
+
+      JsonArray infoBq2589xInV = user.createNestedArray(F("Vbus voltage"));
+      infoBq2589xInV.add(mycharger.adc_read_vbus_volt());
+      infoBq2589xInV.add(F(" mV"));
+
       JsonArray infoBq2589xVoltage = user.createNestedArray(F("Battery voltage"));
-      infoBq2589xVoltage.add(mycharger.adc_read_battery_volt());
+      infoBq2589xVoltage.add(voltage);
       infoBq2589xVoltage.add(F(" mV"));
 
       JsonArray infoBq2589xCurrent = user.createNestedArray(F("Charge current"));
@@ -326,8 +387,11 @@ class Usermod_v2_bq2589x : public Usermod {
         if(root["on"].as<const char*>()[0] == 't') otg_status = true;
         else otg_status = false;
       }
-      // you can as well check WLED state JSON keys
-      //if (root["bri"] == 255) Serial.println(F("Don't burn down your garage!"));
+
+      digitalWrite(otg_pin, otg_status ? HIGH : LOW);
+      DEBUG_PRINT(F("bq2589x OTG pin set to"));
+      DEBUG_PRINTLN(otg_status ? F("ON") : F("OFF"));
+      
     }
 
 
@@ -374,11 +438,9 @@ class Usermod_v2_bq2589x : public Usermod {
       top[FPSTR(_ncePin)] = nce_pin;  // usermodparam
       top[FPSTR(_intPin)] = int_pin;  // usermodparam
       top[FPSTR(_sysPin)] = sys_pin;  // usermodparam
-      top[FPSTR(_batMinV)] = bat_min_voltage;  // usermodparam
-      top[FPSTR(_batMaxV)] = bat_max_voltage;  // usermodparam
       top[FPSTR(_batMaxCC)] = bat_max_charge_current;  // usermodparam
-      top[FPSTR(_batMaxDC)] = bat_max_discharge_current;  // usermodparams
       top[FPSTR(_requestInterval)] = requestInterval;
+      top[FPSTR(_maxTemperature)] = bat_temperature_max;
     }
 
 
@@ -410,19 +472,16 @@ class Usermod_v2_bq2589x : public Usermod {
         uint8_t oldPinNce = nce_pin;
         uint8_t oldPinOtg = otg_pin;
         uint8_t oldPinSys = sys_pin;
-        bool    oldWorkByInt = work_by_int;
         bool    oldEnabled = enabled;
         
         getJsonValue(top[FPSTR(_otgPin)], otg_pin);
         getJsonValue(top[FPSTR(_ncePin)], nce_pin);
         getJsonValue(top[FPSTR(_intPin)], int_pin);
         getJsonValue(top[FPSTR(_sysPin)], sys_pin);
-        getJsonValue(top[FPSTR(_batMinV)], bat_min_voltage);
-        getJsonValue(top[FPSTR(_batMaxV)], bat_max_voltage);
         getJsonValue(top[FPSTR(_batMaxCC)], bat_max_charge_current);
-        getJsonValue(top[FPSTR(_batMaxDC)], bat_max_discharge_current);
         getJsonValue(top[FPSTR(_requestInterval)], requestInterval);
         getJsonValue(top[FPSTR(_enabled)], enabled);
+        getJsonValue(top[FPSTR(_maxTemperature)], bat_temperature_max);
 
         if (enabled != oldEnabled) {
           deinitPins();
@@ -438,13 +497,6 @@ class Usermod_v2_bq2589x : public Usermod {
           DEBUG_PRINTF("bq2589x reinit pins\n");
           reinitPins();
         }
-
-        if (configChanged()) {
-           DEBUG_PRINTLN("bq2589x config changed");
-           if (enabled) {
-          
-           }
-        }
       
       return true;
     }
@@ -457,8 +509,6 @@ class Usermod_v2_bq2589x : public Usermod {
      */
     void appendConfigData() override
     {
-      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":great")); oappend(F("',1,'<i>(this is a great config value)</i>');"));
-      oappend(F("addInfo('")); oappend(String(FPSTR(_name)).c_str()); oappend(F(":testString")); oappend(F("',1,'enter any string you want');"));
     }
 
 
@@ -515,7 +565,7 @@ class Usermod_v2_bq2589x : public Usermod {
       //    enabled = !enabled;
       //    return true;
       //  }
-      //}
+      ///}
       return false;
     }
 
@@ -549,6 +599,54 @@ class Usermod_v2_bq2589x : public Usermod {
 
    //More methods can be added in the future, this example will then be extended.
    //Your usermod will remain compatible as it does not need to implement all methods from the Usermod base class!
+
+
+  // you can add more getters and setters if you need them
+  int getBatteryMaxCC() { return bat_max_charge_current; }
+  int getBatteryMaxTemp() { return bat_temperature_max; }
+  bool getOtgStatus() { return otg_status; }
+  int getOtgPin() { return otg_pin; }
+  int getNcePin() { return nce_pin; }
+  int getIntPin() { return int_pin; }
+  int getSysPin() { return sys_pin; }
+  uint32_t getRequestInterval() { return requestInterval; }
+  void setBatteryMaxCC(int c) { bat_max_charge_current = c; }
+  void setBatteryMaxTemp(int t) { bat_temperature_max = t; }
+  void setOtgStatus(bool s) { otg_status = s; }
+  void setRequestInterval(uint32_t i) { requestInterval = i; }
+
+  int  getBatteryPercentage() {
+    mycharger.adc_start(false);
+    int voltage = mycharger.adc_read_battery_volt();
+    mycharger.adc_stop();
+    return calculatePercentage(voltage);
+  }
+
+  int getChargerCurrent() {
+    mycharger.adc_start(false);
+    int temperature = mycharger.adc_read_charge_current();
+    mycharger.adc_stop();
+    return temperature;
+  }
+  int getBatteryVoltage() {
+    mycharger.adc_start(false);
+    int voltage = mycharger.adc_read_battery_volt();
+    mycharger.adc_stop();
+    return voltage;
+  }
+  int getInputVoltage() {
+    mycharger.adc_start(false);
+    int voltage = mycharger.adc_read_vbus_volt();
+    mycharger.adc_stop();
+    return voltage;
+  }
+  int getTemperature() {
+    mycharger.adc_start(false);
+    int temperature = mycharger.adc_read_temperature();
+    mycharger.adc_stop();
+    return temperature;
+  }
+
 };
 
 
@@ -562,7 +660,7 @@ void Usermod_v2_bq2589x::publishMqtt(const char* state, bool retain)
   if (WLED_MQTT_CONNECTED) {
     char subuf[64];
     strcpy(subuf, mqttDeviceTopic);
-    strcat_P(subuf, PSTR("/example"));
+    strcat_P(subuf, PSTR("/bq2589x"));
     mqtt->publish(subuf, 0, retain, state);
   }
 #endif
@@ -570,18 +668,16 @@ void Usermod_v2_bq2589x::publishMqtt(const char* state, bool retain)
 
 // add more strings here to reduce flash memory usage
 const char Usermod_v2_bq2589x::_name[]    PROGMEM = "bq2589x";
-const char Usermod_v2_bq2589x::_part_no[] PROGMEM = "part";
-const char Usermod_v2_bq2589x::_revision[] PROGMEM = "rev";
+const char Usermod_v2_bq2589x::_part_no[] PROGMEM = "Part No";
+const char Usermod_v2_bq2589x::_revision[] PROGMEM = "Revision";
 const char Usermod_v2_bq2589x::_enabled[] PROGMEM = "enabled";
 const char Usermod_v2_bq2589x::_requestInterval[] PROGMEM = "request-interval-ms";
 const char Usermod_v2_bq2589x::_otgPin[] PROGMEM = "otg-pin";
 const char Usermod_v2_bq2589x::_ncePin[] PROGMEM = "!ce-pin";
 const char Usermod_v2_bq2589x::_intPin[] PROGMEM = "int-pin";
 const char Usermod_v2_bq2589x::_sysPin[] PROGMEM = "sys-pin";
-const char Usermod_v2_bq2589x::_batMinV[] PROGMEM = "Battery Min Voltage";
-const char Usermod_v2_bq2589x::_batMaxV[] PROGMEM = "Battery Max Voltage";
-const char Usermod_v2_bq2589x::_batMaxDC[] PROGMEM = "Battery Max Discharge Current";
 const char Usermod_v2_bq2589x::_batMaxCC[] PROGMEM = "Battery Max Charge Current";
+const char Usermod_v2_bq2589x::_maxTemperature[] PROGMEM = "Battery Max Temperature";
 
 
 static Usermod_v2_bq2589x bq2589x_um;
